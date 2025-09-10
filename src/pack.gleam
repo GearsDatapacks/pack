@@ -1,5 +1,6 @@
 import directories
 import filepath
+import gleam/bool
 import gleam/dynamic/decode
 import gleam/http/request
 import gleam/http/response
@@ -88,9 +89,11 @@ pub type LoadError {
   FailedToGetDirectory
   FailedToCreateDirectory(file.FileError)
   FailedToWriteToFile(file.FileError)
+  FailedToWriteReadFile(file.FileError)
   RequestFailed(url: String, error: httpc.HttpError)
   RequestReturnedIncorrectResponse(status_code: Int, error: String)
   ResponseJsonInvalid(json.DecodeError)
+  FileContainedInvalidJson(json.DecodeError)
 }
 
 pub fn load() -> Result(Pack, LoadError) {
@@ -100,6 +103,11 @@ pub fn load() -> Result(Pack, LoadError) {
   ))
   let pack_directory = pack_directory(data_directory)
 
+  use <- bool.lazy_guard(
+    file.is_file(packages_file(pack_directory)) == Ok(True),
+    fn() { load_pack_from_file(pack_directory) },
+  )
+
   use packages <- result.try(fetch_packages())
 
   let pack = Pack(pack_directory:, packages:)
@@ -107,6 +115,22 @@ pub fn load() -> Result(Pack, LoadError) {
   use Nil <- result.try(write_to_file(pack))
 
   Ok(pack)
+}
+
+fn load_pack_from_file(pack_directory: String) -> Result(Pack, LoadError) {
+  let file_path = packages_file(pack_directory)
+
+  use json <- result.try(result.map_error(
+    file.read(file_path),
+    FailedToWriteReadFile,
+  ))
+
+  use packages <- result.try(result.map_error(
+    json.parse(json, decode.at(["packages"], decode.list(package_decoder()))),
+    FileContainedInvalidJson,
+  ))
+
+  Ok(Pack(pack_directory:, packages:))
 }
 
 const packages_api_url = "https://packages.gleam.run/api/packages/"
@@ -186,13 +210,13 @@ fn write_to_file(pack: Pack) -> Result(Nil, LoadError) {
   ))
 
   result.map_error(
-    file.write(json, to: packages_file(pack)),
+    file.write(json, to: packages_file(pack.pack_directory)),
     FailedToWriteToFile,
   )
 }
 
-fn packages_file(pack: Pack) -> String {
-  filepath.join(pack.pack_directory, "packages.json")
+fn packages_file(pack_directory: String) -> String {
+  filepath.join(pack_directory, "packages.json")
 }
 
 pub fn main() -> Nil {
