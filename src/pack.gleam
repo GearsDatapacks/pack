@@ -171,8 +171,6 @@ fn fetch_package(name: String) -> Result(Package, LoadError) {
 
   use Nil <- result.try(check_response_status(response))
 
-  echo name
-
   result.map_error(
     json.parse(response.body, decode.at(["data"], package_decoder())),
     ResponseJsonInvalid,
@@ -239,8 +237,6 @@ pub fn download_packages(pack: Pack) -> Result(Nil, LoadError) {
 
   let url = hex_tarballs_url <> file_name
   let assert Ok(request) = request.to(url) as "URL parsing failed"
-
-  echo package.name
 
   use response <- result.try(
     request
