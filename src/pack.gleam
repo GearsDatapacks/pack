@@ -1,5 +1,5 @@
 import directories
-import filepath
+import filepath as path
 import gleam/bool
 import gleam/dynamic/decode
 import gleam/http/request
@@ -91,9 +91,10 @@ pub type LoadError {
   FailedToWriteToFile(file.FileError)
   FailedToWriteReadFile(file.FileError)
   RequestFailed(url: String, error: httpc.HttpError)
-  RequestReturnedIncorrectResponse(status_code: Int, error: String)
+  RequestReturnedIncorrectResponse(status_code: Int)
   ResponseJsonInvalid(json.DecodeError)
   FileContainedInvalidJson(json.DecodeError)
+  FailedToDecodeHexTarball
 }
 
 pub fn load() -> Result(Pack, LoadError) {
@@ -179,24 +180,20 @@ fn fetch_package(name: String) -> Result(Package, LoadError) {
 }
 
 fn check_response_status(
-  response: response.Response(String),
+  response: response.Response(a),
 ) -> Result(Nil, LoadError) {
   case response.status {
     200 -> Ok(Nil)
-    status ->
-      Error(RequestReturnedIncorrectResponse(
-        status_code: status,
-        error: response.body,
-      ))
+    status -> Error(RequestReturnedIncorrectResponse(status_code: status))
   }
 }
 
 fn pack_directory(data_directory: String) -> String {
-  filepath.join(data_directory, "pack")
+  path.join(data_directory, "pack")
 }
 
 pub fn packages_directory(pack: Pack) -> String {
-  filepath.join(pack.pack_directory, "packages")
+  path.join(pack.pack_directory, "packages")
 }
 
 fn write_to_file(pack: Pack) -> Result(Nil, LoadError) {
@@ -216,11 +213,69 @@ fn write_to_file(pack: Pack) -> Result(Nil, LoadError) {
 }
 
 fn packages_file(pack_directory: String) -> String {
-  filepath.join(pack_directory, "packages.json")
+  path.join(pack_directory, "packages.json")
 }
 
 pub fn main() -> Nil {
   let assert Ok(pack) = load()
-  let _ = pack
+  let assert Ok(Nil) = download_packages(pack)
   Nil
 }
+
+const hex_tarballs_url = "https://repo.hex.pm/tarballs/"
+
+pub fn download_packages(pack: Pack) -> Result(Nil, LoadError) {
+  let packages_directory = packages_directory(pack)
+
+  use package <- list.try_each(pack.packages)
+
+  let directory_path = path.join(packages_directory, package.name)
+
+  // If the directory already exists, that means the package is already downloaded,
+  // so we can skip it.
+  use <- bool.guard(file.is_directory(directory_path) == Ok(True), Ok(Nil))
+
+  let file_name = package.name <> "-" <> package.latest_version <> ".tar"
+
+  let url = hex_tarballs_url <> file_name
+  let assert Ok(request) = request.to(url) as "URL parsing failed"
+
+  echo package.name
+
+  use response <- result.try(
+    request
+    |> request.set_body(<<>>)
+    |> httpc.send_bits
+    |> result.map_error(RequestFailed(url, _)),
+  )
+
+  // Sometimes the package index contains outdated information including packages
+  // which don't exist on Hex anymore. In that case, we want to gracefully skip
+  // non-existent packages so the rest of the downloads can proceed.
+  use <- bool.guard(response.status == 404, Ok(Nil))
+
+  // TODO: Maybe skip all failed requests but log them somehow?
+  use Nil <- result.try(check_response_status(response))
+
+  use files <- result.try(result.replace_error(
+    extract_files(response.body),
+    FailedToDecodeHexTarball,
+  ))
+
+  list.try_each(files, fn(file) {
+    let #(name, contents) = file
+    let path = path.join(directory_path, name)
+    let containing_directory = path.directory_name(path)
+
+    use Nil <- result.try(result.map_error(
+      file.create_directory_all(containing_directory),
+      FailedToCreateDirectory,
+    ))
+
+    file.write_bits(contents, to: path)
+    |> result.map_error(FailedToWriteToFile)
+  })
+}
+
+@external(erlang, "pack_ffi", "extract_files")
+fn extract_files(bits: BitArray) -> Result(List(#(String, BitArray)), Nil)
