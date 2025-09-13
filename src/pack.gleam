@@ -110,12 +110,16 @@ pub type Options {
   )
 }
 
-const default_options = Options(
+pub const default_options = Options(
   write_to_file: True,
   refresh_package_list: False,
   write_packages_to_disc: True,
   read_packages_from_disc: True,
 )
+
+pub fn packages(pack: Pack) -> List(Package) {
+  pack.packages
+}
 
 pub fn load(options: Options) -> Result(Pack, LoadError) {
   use data_directory <- result.try(result.replace_error(
