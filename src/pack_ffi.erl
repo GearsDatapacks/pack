@@ -1,6 +1,6 @@
 -module(pack_ffi).
 
--export([extract_files/1]).
+-export([extract_files/1, strip_prefix/2]).
 
 %% Extracts all files from a Hex tarball. A Hex tarball is a `.tar` file, which
 %% contains another `contents.tar.gz` gzip file, which contains the source code.
@@ -35,4 +35,15 @@ remap_files(Files, Out) ->
             Out;
         [{Name, Contents} | Rest] ->
             remap_files(Rest, [{list_to_binary(Name), Contents} | Out])
+    end.
+
+strip_prefix(String, Prefix) ->
+    Prefix_size = byte_size(Prefix),
+
+    case Prefix =:= binary_part(String, 0, Prefix_size) of
+        true ->
+            String_size = byte_size(String),
+            binary_part(String, Prefix_size, String_size - Prefix_size);
+        false ->
+            String
     end.
