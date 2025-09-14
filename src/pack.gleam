@@ -14,6 +14,7 @@ import gleam/json
 import gleam/list
 import gleam/option
 import gleam/result
+import gleam/string
 import simplifile as file
 
 pub type Package {
@@ -92,16 +93,95 @@ pub opaque type Pack {
 
 pub type Error {
   FailedToGetDirectory
-  FailedToCreateDirectory(file.FileError)
-  FailedToWriteToFile(file.FileError)
-  FailedToReadFile(file.FileError)
+  FailedToCreateDirectory(path: String, error: file.FileError)
+  FailedToWriteToFile(path: String, error: file.FileError)
+  FailedToReadFile(path: String, error: file.FileError)
+  FailedToDeleteDirectory(path: String, error: file.FileError)
+  FailedToReadDirectory(path: String, error: file.FileError)
   RequestFailed(url: String, error: httpc.HttpError)
-  RequestReturnedIncorrectResponse(status_code: Int)
+  RequestReturnedIncorrectResponse(url: String, status_code: Int)
   ResponseJsonInvalid(json.DecodeError)
   FileContainedInvalidJson(json.DecodeError)
   FailedToDecodeHexTarball
-  FailedToDeleteDirectory(file.FileError)
-  FailedToReadDirectory(file.FileError)
+}
+
+pub fn describe_error(error: Error) -> String {
+  case error {
+    FailedToCreateDirectory(path:, error:) ->
+      "Failed to create directory "
+      <> path
+      <> ". The error message was: "
+      <> file.describe_error(error)
+    FailedToDeleteDirectory(path:, error:) ->
+      "Failed to delete "
+      <> path
+      <> ". The error message was: "
+      <> file.describe_error(error)
+    FailedToReadDirectory(path:, error:) ->
+      "Failed to read directory "
+      <> path
+      <> ". The error message was: "
+      <> file.describe_error(error)
+    FailedToReadFile(path:, error:) ->
+      "Failed to read "
+      <> path
+      <> ". The error message was: "
+      <> file.describe_error(error)
+    FailedToWriteToFile(path:, error:) ->
+      "Failed to write to "
+      <> path
+      <> ". The error message was: "
+      <> file.describe_error(error)
+    FailedToDecodeHexTarball -> "Failed to decode Hex tarball"
+    FailedToGetDirectory -> "Failed to find suitable directory for storing data"
+    FileContainedInvalidJson(error) ->
+      "Data file contained invalid JSON. The error message was: "
+      <> json_error(error)
+    RequestFailed(url:, error:) ->
+      "Request to " <> url <> " failed. The error was: " <> httpc_error(error)
+    RequestReturnedIncorrectResponse(url:, status_code:) ->
+      "Request to "
+      <> url
+      <> " return invalid response, status code "
+      <> int.to_string(status_code)
+    ResponseJsonInvalid(error) -> "Response JSON invalid: " <> json_error(error)
+  }
+}
+
+fn httpc_error(error: httpc.HttpError) -> String {
+  case error {
+    httpc.FailedToConnect(ip4:, ip6: _) ->
+      "Failed to connect: " <> connect_error(ip4)
+    httpc.InvalidUtf8Response -> "Invalid Utf-8 response"
+    httpc.ResponseTimeout -> "Response timed out"
+  }
+}
+
+fn connect_error(error: httpc.ConnectError) -> String {
+  case error {
+    httpc.Posix(code:) -> "Posix error: " <> code
+    httpc.TlsAlert(code:, detail:) -> "TLS alert: " <> code <> ", " <> detail
+  }
+}
+
+fn json_error(error: json.DecodeError) -> String {
+  case error {
+    json.UnableToDecode(errors) ->
+      "Unable to decode: " <> string.join(list.map(errors, decode_error), "; ")
+    json.UnexpectedByte(byte) -> "Unexpected byte `" <> byte <> "`"
+    json.UnexpectedEndOfInput -> "Unexpected end of input"
+    json.UnexpectedSequence(byte) -> "Unexpected sequence: `" <> byte <> "`"
+  }
+}
+
+fn decode_error(error: decode.DecodeError) -> String {
+  let decode.DecodeError(expected:, found:, path:) = error
+  "Expected "
+  <> expected
+  <> " at "
+  <> string.join(path, ".")
+  <> ", but found "
+  <> found
 }
 
 pub type Options {
@@ -151,10 +231,9 @@ fn load_pack_from_file(
   do_log(options, "Reading packages file...")
   let file_path = packages_file(pack_directory)
 
-  use json <- result.try(result.map_error(
-    file.read(file_path),
-    FailedToReadFile,
-  ))
+  use json <- result.try(
+    result.map_error(file.read(file_path), FailedToReadFile(file_path, _)),
+  )
 
   use packages <- result.try(result.map_error(
     json.parse(json, decode.at(["packages"], decode.list(package_decoder()))),
@@ -177,7 +256,7 @@ fn fetch_packages(options: Options) -> Result(List(Package), Error) {
     httpc.send(request) |> result.map_error(RequestFailed(packages_api_url, _)),
   )
 
-  use Nil <- result.try(check_response_status(response))
+  use Nil <- result.try(check_response_status(packages_api_url, response))
 
   // To get full package information, we need to send a request for each individual
   // package, so we can ignore all the data except the name here.
@@ -238,7 +317,7 @@ fn fetch_package(
     httpc.send(request) |> result.map_error(RequestFailed(url, _)),
   )
 
-  use Nil <- result.try(check_response_status(response))
+  use Nil <- result.try(check_response_status(url, response))
 
   use package <- result.map(result.map_error(
     json.parse(response.body, decode.at(["data"], package_decoder())),
@@ -253,10 +332,13 @@ fn fetch_package(
   package
 }
 
-fn check_response_status(response: response.Response(a)) -> Result(Nil, Error) {
+fn check_response_status(
+  url: String,
+  response: response.Response(a),
+) -> Result(Nil, Error) {
   case response.status {
     200 -> Ok(Nil)
-    status -> Error(RequestReturnedIncorrectResponse(status_code: status))
+    status -> Error(RequestReturnedIncorrectResponse(url:, status_code: status))
   }
 }
 
@@ -278,15 +360,20 @@ fn write_to_file(pack: Pack) -> Result(Nil, Error) {
     json.object([#("packages", json.array(pack.packages, package_to_json))])
     |> json.to_string
 
-  use Nil <- result.try(result.map_error(
-    file.create_directory_all(pack.pack_directory),
-    FailedToCreateDirectory,
-  ))
+  use Nil <- result.try(
+    result.map_error(
+      file.create_directory_all(pack.pack_directory),
+      FailedToCreateDirectory(pack.pack_directory, _),
+    ),
+  )
 
-  use Nil <- result.map(result.map_error(
-    file.write(json, to: packages_file(pack.pack_directory)),
-    FailedToWriteToFile,
-  ))
+  let packages_file = packages_file(pack.pack_directory)
+  use Nil <- result.map(
+    result.map_error(file.write(json, to: packages_file), FailedToWriteToFile(
+      packages_file,
+      _,
+    )),
+  )
 
   log(pack, " Done\n")
 }
@@ -426,16 +513,18 @@ fn do_download_packages(
       case file.is_directory(directory_path) {
         Ok(True) if pack.options.read_packages_from_disc -> {
           log(pack, "Reading package " <> package.name <> "from disc...")
-          use files <- result.try(result.map_error(
-            file.get_files(directory_path),
-            FailedToReadDirectory,
-          ))
+          use files <- result.try(
+            result.map_error(
+              file.get_files(directory_path),
+              FailedToReadDirectory(directory_path, _),
+            ),
+          )
           use files <- result.try(
             list.try_map(files, fn(path) {
               let name = strip_prefix(path, with_slash)
 
               case file.read_bits(path) {
-                Error(error) -> Error(FailedToReadFile(error))
+                Error(error) -> Error(FailedToReadFile(path, error))
                 Ok(contents) -> Ok(#(name, contents))
               }
             }),
@@ -447,10 +536,12 @@ fn do_download_packages(
           Ok(#([#(package.name, files), ..packages], index))
         }
         Ok(True) -> {
-          use Nil <- result.try(result.map_error(
-            file.delete(directory_path),
-            FailedToDeleteDirectory,
-          ))
+          use Nil <- result.try(
+            result.map_error(
+              file.delete(directory_path),
+              FailedToDeleteDirectory(directory_path, _),
+            ),
+          )
           case download_package(pack, package, index, package_count) {
             Ok(option.None) -> Ok(#(packages, index))
             Ok(option.Some(package)) -> Ok(#([package, ..packages], index))
@@ -502,7 +593,7 @@ fn download_package(
   })
 
   // TODO: Maybe skip all failed requests but log them somehow?
-  use Nil <- result.try(check_response_status(response))
+  use Nil <- result.try(check_response_status(url, response))
 
   use files <- result.try(result.replace_error(
     extract_files(response.body),
@@ -536,13 +627,15 @@ fn write_package_files_to_disc(
     let path = path.join(directory_path, name)
     let containing_directory = path.directory_name(path)
 
-    use Nil <- result.try(result.map_error(
-      file.create_directory_all(containing_directory),
-      FailedToCreateDirectory,
-    ))
+    use Nil <- result.try(
+      result.map_error(
+        file.create_directory_all(containing_directory),
+        FailedToCreateDirectory(containing_directory, _),
+      ),
+    )
 
     file.write_bits(contents, to: path)
-    |> result.map_error(FailedToWriteToFile)
+    |> result.map_error(FailedToWriteToFile(path, _))
   })
 }
 
