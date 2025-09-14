@@ -707,7 +707,7 @@ fn log(pack: Pack, text: String) -> Nil {
 fn do_log(options: Options, text: String) -> Nil {
   case options.print_logs {
     False -> Nil
-    True -> io.print(text)
+    True -> io.print_error(text)
   }
 }
 
