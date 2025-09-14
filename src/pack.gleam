@@ -443,7 +443,7 @@ pub fn main() -> Nil {
     Help -> print_help()
     Download(options:) -> {
       let assert Ok(pack) = load(options)
-      let assert Ok(Nil) = download_packages_to_disc(pack)
+      let assert Ok(Nil) = download_to_disc(pack)
       Nil
     }
     Fetch(options:) -> {
@@ -531,7 +531,7 @@ pub type File {
 
 /// Download packages, returning a dict containing a mapping of package names to
 /// the files within the package.
-pub fn download_packages(pack: Pack) -> Result(Dict(String, List(File)), Error) {
+pub fn download(pack: Pack) -> Result(Dict(String, List(File)), Error) {
   use packages <- result.map(do_download_packages(pack))
 
   log(pack, "Extracting package files...")
@@ -674,7 +674,7 @@ fn download_package(
 }
 
 /// Download packages to disc without returning information about them.
-pub fn download_packages_to_disc(pack: Pack) -> Result(Nil, Error) {
+pub fn download_to_disc(pack: Pack) -> Result(Nil, Error) {
   do_download_packages(pack) |> result.replace(Nil)
 }
 
