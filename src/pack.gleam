@@ -477,6 +477,8 @@ fn parse_options(arguments: List(String), options: Options) -> Options {
         arguments,
         Options(..options, read_packages_from_disc: False),
       )
+    ["--quiet", ..arguments] ->
+      parse_options(arguments, Options(..options, print_logs: False))
     [_, ..arguments] -> parse_options(arguments, options)
   }
 }
@@ -501,6 +503,8 @@ Flags:
 
 --redownload-all  Normally, when downloading packages, `pack` will skip any which
   already are on disc. Instead, all packages will be re-downloaded.
+
+--quiet  Run the desired command without logging progress.
 ",
   )
 }
