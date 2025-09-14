@@ -17,6 +17,7 @@ import gleam/result
 import gleam/string
 import simplifile as file
 
+/// Information about a Gleam package, fetching from the Gleam package index.
 pub type Package {
   Package(
     name: String,
@@ -67,6 +68,8 @@ fn package_decoder() -> decode.Decoder(Package) {
   ))
 }
 
+/// Information about a single release of a package, from the Gleam package
+/// index.
 pub type Release {
   Release(version: String, downloads: Int, updated_at: Int)
 }
@@ -87,24 +90,38 @@ fn release_decoder() -> decode.Decoder(Release) {
   decode.success(Release(version:, downloads:, updated_at:))
 }
 
+/// Data stored by `pack` to keep track of internal state.
 pub opaque type Pack {
   Pack(pack_directory: String, options: Options, packages: List(Package))
 }
 
+/// An error which occurred during an operation.
 pub type Error {
+  /// Failed to find a suitable directory to store data in
   FailedToGetDirectory
+  /// Failed to create a directory
   FailedToCreateDirectory(path: String, error: file.FileError)
+  /// Failed to write to a file
   FailedToWriteToFile(path: String, error: file.FileError)
+  /// Failed to read a file
   FailedToReadFile(path: String, error: file.FileError)
+  /// Failed to delete a directory
   FailedToDeleteDirectory(path: String, error: file.FileError)
+  /// Failed to read a directory
   FailedToReadDirectory(path: String, error: file.FileError)
+  /// Failed to send an HTTP request
   RequestFailed(url: String, error: httpc.HttpError)
+  /// An HTTP request returned a response that was not 200 OK
   RequestReturnedIncorrectResponse(url: String, status_code: Int)
+  /// An HTTP request returned invalid JSON
   ResponseJsonInvalid(json.DecodeError)
+  /// The cached data file contained invalid JSON
   FileContainedInvalidJson(json.DecodeError)
-  FailedToDecodeHexTarball
+  /// Decoding the Hex tarball for a particular package failed.
+  FailedToDecodeHexTarball(package: String)
 }
 
+/// Turn an error into a human-readable string.
 pub fn describe_error(error: Error) -> String {
   case error {
     FailedToCreateDirectory(path:, error:) ->
@@ -132,7 +149,8 @@ pub fn describe_error(error: Error) -> String {
       <> path
       <> ". The error message was: "
       <> file.describe_error(error)
-    FailedToDecodeHexTarball -> "Failed to decode Hex tarball"
+    FailedToDecodeHexTarball(package:) ->
+      "Failed to decode Hex tarball for " <> package
     FailedToGetDirectory -> "Failed to find suitable directory for storing data"
     FileContainedInvalidJson(error) ->
       "Data file contained invalid JSON. The error message was: "
@@ -184,16 +202,38 @@ fn decode_error(error: decode.DecodeError) -> String {
   <> found
 }
 
+/// Options to configure behaviour of `pack`
 pub type Options {
   Options(
+    /// Whether or not to write the package index data to a file for caching later.
+    /// It is recommended to leave this as `True`, as setting it to `False` will
+    /// require sending a request to the Gleam packages API every time you need to
+    /// access data. However, you may want to set it to `False` if you don't want
+    /// `pack` to write to your file system.
     write_to_file: Bool,
+    /// If set to `True`, `pack` will ignore any cached package information and
+    /// perform a full rescan of the Gleam package index. This is useful if the
+    /// cached information is outdated.
     refresh_package_list: Bool,
+    /// Whether or not to write packages to disc when downloading. Like `write_to_file`,
+    /// setting this to `False` will require sending requests to Hex for every
+    /// package every time `pack` is invoked.
     write_packages_to_disc: Bool,
+    /// If set to `False`, `pack` will ignore existing source code downloaded for
+    /// packages and redownload all of them. This is useful if downloaded packages
+    /// are outdated and you need the newer source code.
     read_packages_from_disc: Bool,
+    /// Whether or not to print out logs of operations `pack` is performing. It
+    /// can be helpful to user experience to leave these on, as downloading from
+    /// the package index can take a long time, and without logs there is no
+    /// indication of progress. However, this will print a line for every single
+    /// package downloaded so it may be preferable to disable it.
     print_logs: Bool,
   )
 }
 
+/// A set of default options, the same defaults as are used by the CLI when no
+/// flags are provided.
 pub const default_options = Options(
   write_to_file: True,
   refresh_package_list: False,
@@ -202,10 +242,13 @@ pub const default_options = Options(
   print_logs: True,
 )
 
+/// Get the list of packages from the package index.
 pub fn packages(pack: Pack) -> List(Package) {
   pack.packages
 }
 
+/// Load state, either from a file or by fetching data from the Gleam package index,
+/// depending on the options and whether `pack` has been run before.
 pub fn load(options: Options) -> Result(Pack, Error) {
   use pack_directory <- result.try(pack_directory())
 
@@ -349,6 +392,7 @@ fn pack_directory() -> Result(String, Error) {
   )
 }
 
+/// Returns the path to the directory containing downloaded package source code.
 pub fn packages_directory(pack: Pack) -> String {
   path.join(pack.pack_directory, "packages")
 }
@@ -389,6 +433,7 @@ type Command {
   Directory
 }
 
+@internal
 pub fn main() -> Nil {
   let arguments = argv.load().arguments
 
@@ -462,11 +507,26 @@ Flags:
 
 const hex_tarballs_url = "https://repo.hex.pm/tarballs/"
 
+/// A file which is included in a package
 pub type File {
-  TextFile(name: String, contents: String)
-  BinaryFile(name: String, contents: BitArray)
+  /// A text file containing UTF-8 data
+  TextFile(
+    /// The path to the file within the package, for example `src/gleam/io.gleam`
+    name: String,
+    /// The contents of the text file
+    contents: String,
+  )
+  /// A binary file which doesn't contain valid UTF-8
+  BinaryFile(
+    /// The path to the file within the package, for example `priv/data/something.bin`
+    name: String,
+    /// The binary contents of the file
+    contents: BitArray,
+  )
 }
 
+/// Download packages, returning a dict containing a mapping of package names to
+/// the files within the package.
 pub fn download_packages(pack: Pack) -> Result(Dict(String, List(File)), Error) {
   use packages <- result.map(do_download_packages(pack))
 
@@ -597,7 +657,7 @@ fn download_package(
 
   use files <- result.try(result.replace_error(
     extract_files(response.body),
-    FailedToDecodeHexTarball,
+    FailedToDecodeHexTarball(package.name),
   ))
 
   use Nil <- result.try(case pack.options.write_packages_to_disc {
@@ -609,6 +669,7 @@ fn download_package(
   Ok(option.Some(#(package.name, files)))
 }
 
+/// Download packages to disc without returning information about them.
 pub fn download_packages_to_disc(pack: Pack) -> Result(Nil, Error) {
   do_download_packages(pack) |> result.replace(Nil)
 }
