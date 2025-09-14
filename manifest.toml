@@ -11,9 +11,13 @@ packages = [
   { name = "gleam_httpc", version = "5.0.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_http", "gleam_stdlib"], otp_app = "gleam_httpc", source = "hex", outer_checksum = "C545172618D07811494E97AAA4A0FB34DA6F6D0061FDC8041C2F8E3BE2B2E48F" },
   { name = "gleam_json", version = "3.0.2", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_json", source = "hex", outer_checksum = "874FA3C3BB6E22DD2BB111966BD40B3759E9094E05257899A7C08F5DE77EC049" },
   { name = "gleam_stdlib", version = "0.63.0", build_tools = ["gleam"], requirements = [], otp_app = "gleam_stdlib", source = "hex", outer_checksum = "5E216C7D5E8BE22359C9D7DAA2CFBD66039BC12565542F34CD033C5BB57071ED" },
+  { name = "gleam_time", version = "1.4.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_time", source = "hex", outer_checksum = "DCDDC040CE97DA3D2A925CDBBA08D8A78681139745754A83998641C8A3F6587E" },
+  { name = "gleescript", version = "1.5.2", build_tools = ["gleam"], requirements = ["argv", "filepath", "gleam_erlang", "gleam_stdlib", "simplifile", "snag", "tom"], otp_app = "gleescript", source = "hex", outer_checksum = "27AC58481742ED29D9B37C506F78958A8AD798750A79ED08C8F8AFBA8F23563B" },
   { name = "gleeunit", version = "1.6.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "FDC68A8C492B1E9B429249062CD9BAC9B5538C6FBF584817205D0998C42E1DAC" },
   { name = "platform", version = "1.0.0", build_tools = ["gleam"], requirements = [], otp_app = "platform", source = "hex", outer_checksum = "8339420A95AD89AAC0F82F4C3DB8DD401041742D6C3F46132A8739F6AEB75391" },
   { name = "simplifile", version = "2.3.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "0A868DAC6063D9E983477981839810DC2E553285AB4588B87E3E9C96A7FB4CB4" },
+  { name = "snag", version = "1.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "snag", source = "hex", outer_checksum = "7E9F06390040EB5FAB392CE642771484136F2EC103A92AE11BA898C8167E6E17" },
+  { name = "tom", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "74D0C5A3761F7A7D06994755D4D5AD854122EF8E9F9F76A3E7547606D8C77091" },
 ]
 
 [requirements]
@@ -24,5 +28,6 @@ gleam_http = { version = ">= 4.1.1 and < 5.0.0" }
 gleam_httpc = { version = ">= 5.0.0 and < 6.0.0" }
 gleam_json = { version = ">= 3.0.2 and < 4.0.0" }
 gleam_stdlib = { version = ">= 0.44.0 and < 2.0.0" }
+gleescript = { version = ">= 1.5.2 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 simplifile = { version = ">= 2.3.0 and < 3.0.0" }
