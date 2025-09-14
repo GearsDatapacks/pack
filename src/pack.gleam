@@ -7,6 +7,8 @@ import gleam/dynamic/decode
 import gleam/http/request
 import gleam/http/response
 import gleam/httpc
+import gleam/int
+import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option
@@ -107,6 +109,7 @@ pub type Options {
     refresh_package_list: Bool,
     write_packages_to_disc: Bool,
     read_packages_from_disc: Bool,
+    print_logs: Bool,
   )
 }
 
@@ -115,6 +118,7 @@ pub const default_options = Options(
   refresh_package_list: False,
   write_packages_to_disc: True,
   read_packages_from_disc: True,
+  print_logs: False,
 )
 
 pub fn packages(pack: Pack) -> List(Package) {
@@ -129,11 +133,12 @@ pub fn load(options: Options) -> Result(Pack, LoadError) {
   let pack_directory = pack_directory(data_directory)
 
   use <- bool.lazy_guard(
-    file.is_file(packages_file(pack_directory)) == Ok(True),
+    !options.refresh_package_list
+      && file.is_file(packages_file(pack_directory)) == Ok(True),
     fn() { load_pack_from_file(pack_directory, options) },
   )
 
-  use packages <- result.try(fetch_packages())
+  use packages <- result.try(fetch_packages(options))
 
   let pack = Pack(pack_directory:, packages:, options:)
 
@@ -146,6 +151,7 @@ fn load_pack_from_file(
   pack_directory: String,
   options: Options,
 ) -> Result(Pack, LoadError) {
+  do_log(options, "Reading packages file...")
   let file_path = packages_file(pack_directory)
 
   use json <- result.try(result.map_error(
@@ -157,13 +163,16 @@ fn load_pack_from_file(
     json.parse(json, decode.at(["packages"], decode.list(package_decoder()))),
     FileContainedInvalidJson,
   ))
+  do_log(options, " Done\n")
 
   Ok(Pack(pack_directory:, packages:, options:))
 }
 
 const packages_api_url = "https://packages.gleam.run/api/packages/"
 
-fn fetch_packages() -> Result(List(Package), LoadError) {
+fn fetch_packages(options: Options) -> Result(List(Package), LoadError) {
+  do_log(options, "Fetching package list...")
+
   let assert Ok(request) = request.to(packages_api_url)
     as "URL parsing should always succeed"
 
@@ -185,10 +194,46 @@ fn fetch_packages() -> Result(List(Package), LoadError) {
     ResponseJsonInvalid,
   ))
 
-  list.try_map(package_names, fetch_package)
+  do_log(options, " Done\n")
+
+  let package_count = int.to_string(list.length(package_names))
+
+  index_try_map(package_names, fn(package, index) {
+    fetch_package(package, index, options, package_count)
+  })
 }
 
-fn fetch_package(name: String) -> Result(Package, LoadError) {
+fn index_try_map(
+  list: List(element),
+  f: fn(element, Int) -> Result(result, error),
+) -> Result(List(result), error) {
+  do_index_try_map(list, 0, f, [])
+}
+
+fn do_index_try_map(
+  list: List(element),
+  index: Int,
+  f: fn(element, Int) -> Result(result, error),
+  acc: List(result),
+) -> Result(List(result), error) {
+  case list {
+    [] -> Ok(list.reverse(acc))
+    [first, ..rest] ->
+      case f(first, index) {
+        Error(error) -> Error(error)
+        Ok(value) -> do_index_try_map(rest, index + 1, f, [value, ..acc])
+      }
+  }
+}
+
+fn fetch_package(
+  name: String,
+  index: Int,
+  options: Options,
+  total_packages: String,
+) -> Result(Package, LoadError) {
+  do_log(options, "Fetching information for " <> name <> "...")
+
   let url = packages_api_url <> name
   let assert Ok(request) = request.to(url)
     as "URL parsing should always succeed"
@@ -198,10 +243,17 @@ fn fetch_package(name: String) -> Result(Package, LoadError) {
 
   use Nil <- result.try(check_response_status(response))
 
-  result.map_error(
+  use package <- result.map(result.map_error(
     json.parse(response.body, decode.at(["data"], package_decoder())),
     ResponseJsonInvalid,
+  ))
+
+  do_log(
+    options,
+    " Done (" <> int.to_string(index + 1) <> "/" <> total_packages <> ")\n",
   )
+
+  package
 }
 
 fn check_response_status(
@@ -222,6 +274,8 @@ pub fn packages_directory(pack: Pack) -> String {
 }
 
 fn write_to_file(pack: Pack) -> Result(Nil, LoadError) {
+  log(pack, "Writing packages to file...")
+
   let json =
     json.object([#("packages", json.array(pack.packages, package_to_json))])
     |> json.to_string
@@ -231,10 +285,12 @@ fn write_to_file(pack: Pack) -> Result(Nil, LoadError) {
     FailedToCreateDirectory,
   ))
 
-  result.map_error(
+  use Nil <- result.map(result.map_error(
     file.write(json, to: packages_file(pack.pack_directory)),
     FailedToWriteToFile,
-  )
+  ))
+
+  log(pack, " Done\n")
 }
 
 fn packages_file(pack_directory: String) -> String {
@@ -259,18 +315,26 @@ pub fn download_packages(
 ) -> Result(Dict(String, List(File)), LoadError) {
   use packages <- result.map(do_download_packages(pack))
 
-  use packages, #(name, files) <- list.fold(packages, dict.new())
+  log(pack, "Extracting package files...")
 
-  let files =
-    list.map(files, fn(file) {
-      let #(name, contents) = file
-      case bit_array.to_string(contents) {
-        Error(_) -> BinaryFile(name:, contents:)
-        Ok(contents) -> TextFile(name:, contents:)
-      }
+  let result =
+    list.fold(packages, dict.new(), fn(packages, package) {
+      let #(name, files) = package
+
+      let files =
+        list.map(files, fn(file) {
+          let #(name, contents) = file
+          case bit_array.to_string(contents) {
+            Error(_) -> BinaryFile(name:, contents:)
+            Ok(contents) -> TextFile(name:, contents:)
+          }
+        })
+
+      dict.insert(packages, name, files)
     })
 
-  dict.insert(packages, name, files)
+  log(pack, " Done\n")
+  result
 }
 
 fn do_download_packages(
@@ -278,57 +342,78 @@ fn do_download_packages(
 ) -> Result(List(#(String, List(#(String, BitArray)))), LoadError) {
   let packages_directory = packages_directory(pack)
 
-  use packages, package <- list.try_fold(pack.packages, [])
+  let package_count = int.to_string(list.length(pack.packages))
 
-  let directory_path = path.join(packages_directory, package.name)
-  let with_slash = directory_path <> "/"
+  let result =
+    list.try_fold(pack.packages, #([], 0), fn(acc, package) {
+      let #(packages, index) = acc
 
-  // If the directory already exists, that means the package is already downloaded,
-  // so we can skip it.
-  case file.is_directory(directory_path) {
-    Ok(True) if pack.options.read_packages_from_disc -> {
-      use files <- result.try(result.map_error(
-        file.get_files(directory_path),
-        FailedToReadDirectory,
-      ))
-      use files <- result.try(
-        list.try_map(files, fn(path) {
-          let name = strip_prefix(path, with_slash)
+      let directory_path = path.join(packages_directory, package.name)
+      let with_slash = directory_path <> "/"
 
-          case file.read_bits(path) {
-            Error(error) -> Error(FailedToReadFile(error))
-            Ok(contents) -> Ok(#(name, contents))
+      let index = index + 1
+
+      // If the directory already exists, that means the package is already downloaded,
+      // so we can skip it.
+      case file.is_directory(directory_path) {
+        Ok(True) if pack.options.read_packages_from_disc -> {
+          log(pack, "Reading package " <> package.name <> "from disc...")
+          use files <- result.try(result.map_error(
+            file.get_files(directory_path),
+            FailedToReadDirectory,
+          ))
+          use files <- result.try(
+            list.try_map(files, fn(path) {
+              let name = strip_prefix(path, with_slash)
+
+              case file.read_bits(path) {
+                Error(error) -> Error(FailedToReadFile(error))
+                Ok(contents) -> Ok(#(name, contents))
+              }
+            }),
+          )
+          log(
+            pack,
+            " Done (" <> int.to_string(index) <> "/" <> package_count <> ")\n",
+          )
+          Ok(#([#(package.name, files), ..packages], index))
+        }
+        Ok(True) -> {
+          use Nil <- result.try(result.map_error(
+            file.delete(directory_path),
+            FailedToDeleteDirectory,
+          ))
+          case download_package(pack, package, index, package_count) {
+            Ok(option.None) -> Ok(#(packages, index))
+            Ok(option.Some(package)) -> Ok(#([package, ..packages], index))
+            Error(error) -> Error(error)
           }
-        }),
-      )
-      Ok([#(package.name, files), ..packages])
-    }
-    Ok(True) -> {
-      use Nil <- result.try(result.map_error(
-        file.delete(directory_path),
-        FailedToDeleteDirectory,
-      ))
-      case download_package(pack, package) {
-        Ok(option.None) -> Ok(packages)
-        Ok(option.Some(package)) -> Ok([package, ..packages])
-        Error(error) -> Error(error)
+        }
+        Error(_) | Ok(False) -> {
+          case download_package(pack, package, index, package_count) {
+            Ok(option.None) -> Ok(#(packages, index))
+            Ok(option.Some(package)) -> Ok(#([package, ..packages], index))
+            Error(error) -> Error(error)
+          }
+        }
       }
-    }
-    Error(_) | Ok(False) -> {
-      case download_package(pack, package) {
-        Ok(option.None) -> Ok(packages)
-        Ok(option.Some(package)) -> Ok([package, ..packages])
-        Error(error) -> Error(error)
-      }
-    }
+    })
+
+  case result {
+    Error(error) -> Error(error)
+    Ok(#(packages, _)) -> Ok(packages)
   }
 }
 
 fn download_package(
   pack: Pack,
   package: Package,
+  index: Int,
+  package_count: String,
 ) -> Result(option.Option(#(String, List(#(String, BitArray)))), LoadError) {
   let file_name = package.name <> "-" <> package.latest_version <> ".tar"
+
+  log(pack, "Downloading " <> file_name <> "...")
 
   let url = hex_tarballs_url <> file_name
   let assert Ok(request) = request.to(url) as "URL parsing failed"
@@ -343,7 +428,10 @@ fn download_package(
   // Sometimes the package index contains outdated information including packages
   // which don't exist on Hex anymore. In that case, we want to gracefully skip
   // non-existent packages so the rest of the downloads can proceed.
-  use <- bool.guard(response.status == 404, Ok(option.None))
+  use <- bool.lazy_guard(response.status == 404, fn() {
+    log(pack, " Package missing on Hex\n")
+    Ok(option.None)
+  })
 
   // TODO: Maybe skip all failed requests but log them somehow?
   use Nil <- result.try(check_response_status(response))
@@ -358,6 +446,7 @@ fn download_package(
     True -> write_package_files_to_disc(pack, package.name, files)
   })
 
+  log(pack, " Done (" <> int.to_string(index) <> "/" <> package_count <> ")\n")
   Ok(option.Some(#(package.name, files)))
 }
 
@@ -387,6 +476,17 @@ fn write_package_files_to_disc(
     file.write_bits(contents, to: path)
     |> result.map_error(FailedToWriteToFile)
   })
+}
+
+fn log(pack: Pack, text: String) -> Nil {
+  do_log(pack.options, text)
+}
+
+fn do_log(options: Options, text: String) -> Nil {
+  case options.print_logs {
+    False -> Nil
+    True -> io.print(text)
+  }
 }
 
 @external(erlang, "pack_ffi", "extract_files")
