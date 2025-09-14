@@ -90,7 +90,7 @@ pub opaque type Pack {
   Pack(pack_directory: String, options: Options, packages: List(Package))
 }
 
-pub type LoadError {
+pub type Error {
   FailedToGetDirectory
   FailedToCreateDirectory(file.FileError)
   FailedToWriteToFile(file.FileError)
@@ -126,7 +126,7 @@ pub fn packages(pack: Pack) -> List(Package) {
   pack.packages
 }
 
-pub fn load(options: Options) -> Result(Pack, LoadError) {
+pub fn load(options: Options) -> Result(Pack, Error) {
   use pack_directory <- result.try(pack_directory())
 
   use <- bool.lazy_guard(
@@ -147,7 +147,7 @@ pub fn load(options: Options) -> Result(Pack, LoadError) {
 fn load_pack_from_file(
   pack_directory: String,
   options: Options,
-) -> Result(Pack, LoadError) {
+) -> Result(Pack, Error) {
   do_log(options, "Reading packages file...")
   let file_path = packages_file(pack_directory)
 
@@ -167,7 +167,7 @@ fn load_pack_from_file(
 
 const packages_api_url = "https://packages.gleam.run/api/packages/"
 
-fn fetch_packages(options: Options) -> Result(List(Package), LoadError) {
+fn fetch_packages(options: Options) -> Result(List(Package), Error) {
   do_log(options, "Fetching package list...")
 
   let assert Ok(request) = request.to(packages_api_url)
@@ -228,7 +228,7 @@ fn fetch_package(
   index: Int,
   options: Options,
   total_packages: String,
-) -> Result(Package, LoadError) {
+) -> Result(Package, Error) {
   do_log(options, "Fetching information for " <> name <> "...")
 
   let url = packages_api_url <> name
@@ -253,16 +253,14 @@ fn fetch_package(
   package
 }
 
-fn check_response_status(
-  response: response.Response(a),
-) -> Result(Nil, LoadError) {
+fn check_response_status(response: response.Response(a)) -> Result(Nil, Error) {
   case response.status {
     200 -> Ok(Nil)
     status -> Error(RequestReturnedIncorrectResponse(status_code: status))
   }
 }
 
-fn pack_directory() -> Result(String, LoadError) {
+fn pack_directory() -> Result(String, Error) {
   result.map(
     result.replace_error(directories.data_local_dir(), FailedToGetDirectory),
     path.join(_, "pack"),
@@ -273,7 +271,7 @@ pub fn packages_directory(pack: Pack) -> String {
   path.join(pack.pack_directory, "packages")
 }
 
-fn write_to_file(pack: Pack) -> Result(Nil, LoadError) {
+fn write_to_file(pack: Pack) -> Result(Nil, Error) {
   log(pack, "Writing packages to file...")
 
   let json =
@@ -382,9 +380,7 @@ pub type File {
   BinaryFile(name: String, contents: BitArray)
 }
 
-pub fn download_packages(
-  pack: Pack,
-) -> Result(Dict(String, List(File)), LoadError) {
+pub fn download_packages(pack: Pack) -> Result(Dict(String, List(File)), Error) {
   use packages <- result.map(do_download_packages(pack))
 
   log(pack, "Extracting package files...")
@@ -411,7 +407,7 @@ pub fn download_packages(
 
 fn do_download_packages(
   pack: Pack,
-) -> Result(List(#(String, List(#(String, BitArray)))), LoadError) {
+) -> Result(List(#(String, List(#(String, BitArray)))), Error) {
   let packages_directory = packages_directory(pack)
 
   let package_count = int.to_string(list.length(pack.packages))
@@ -482,7 +478,7 @@ fn download_package(
   package: Package,
   index: Int,
   package_count: String,
-) -> Result(option.Option(#(String, List(#(String, BitArray)))), LoadError) {
+) -> Result(option.Option(#(String, List(#(String, BitArray)))), Error) {
   let file_name = package.name <> "-" <> package.latest_version <> ".tar"
 
   log(pack, "Downloading " <> file_name <> "...")
@@ -522,7 +518,7 @@ fn download_package(
   Ok(option.Some(#(package.name, files)))
 }
 
-pub fn download_packages_to_disc(pack: Pack) -> Result(Nil, LoadError) {
+pub fn download_packages_to_disc(pack: Pack) -> Result(Nil, Error) {
   do_download_packages(pack) |> result.replace(Nil)
 }
 
@@ -530,7 +526,7 @@ fn write_package_files_to_disc(
   pack: Pack,
   package_name: String,
   files: List(#(String, BitArray)),
-) -> Result(Nil, LoadError) {
+) -> Result(Nil, Error) {
   let packages_directory = packages_directory(pack)
 
   let directory_path = path.join(packages_directory, package_name)
