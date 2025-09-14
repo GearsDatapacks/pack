@@ -1,3 +1,4 @@
+import argv
 import directories
 import filepath as path
 import gleam/bit_array
@@ -118,7 +119,7 @@ pub const default_options = Options(
   refresh_package_list: False,
   write_packages_to_disc: True,
   read_packages_from_disc: True,
-  print_logs: False,
+  print_logs: True,
 )
 
 pub fn packages(pack: Pack) -> List(Package) {
@@ -126,11 +127,7 @@ pub fn packages(pack: Pack) -> List(Package) {
 }
 
 pub fn load(options: Options) -> Result(Pack, LoadError) {
-  use data_directory <- result.try(result.replace_error(
-    directories.data_local_dir(),
-    FailedToGetDirectory,
-  ))
-  let pack_directory = pack_directory(data_directory)
+  use pack_directory <- result.try(pack_directory())
 
   use <- bool.lazy_guard(
     !options.refresh_package_list
@@ -265,8 +262,11 @@ fn check_response_status(
   }
 }
 
-fn pack_directory(data_directory: String) -> String {
-  path.join(data_directory, "pack")
+fn pack_directory() -> Result(String, LoadError) {
+  result.map(
+    result.replace_error(directories.data_local_dir(), FailedToGetDirectory),
+    path.join(_, "pack"),
+  )
 }
 
 pub fn packages_directory(pack: Pack) -> String {
@@ -297,10 +297,82 @@ fn packages_file(pack_directory: String) -> String {
   path.join(pack_directory, "packages.json")
 }
 
+type Command {
+  Help
+  Fetch(options: Options)
+  Download(options: Options)
+  Directory
+}
+
 pub fn main() -> Nil {
-  let assert Ok(pack) = load(default_options)
-  let assert Ok(Nil) = download_packages_to_disc(pack)
-  Nil
+  let arguments = argv.load().arguments
+
+  let command = parse_arguments(arguments)
+
+  case command {
+    Help -> print_help()
+    Download(options:) -> {
+      let assert Ok(pack) = load(options)
+      let assert Ok(Nil) = download_packages_to_disc(pack)
+      Nil
+    }
+    Fetch(options:) -> {
+      let assert Ok(_) = load(options)
+      Nil
+    }
+    Directory -> {
+      let assert Ok(directory) = pack_directory()
+      io.println("Pack files are stored in " <> directory)
+    }
+  }
+}
+
+fn parse_arguments(arguments: List(String)) -> Command {
+  case arguments {
+    ["download", ..arguments] ->
+      Download(parse_options(arguments, default_options))
+    ["fetch", ..arguments] -> Fetch(parse_options(arguments, default_options))
+    ["directory", ..] -> Directory
+    _ -> Help
+  }
+}
+
+fn parse_options(arguments: List(String), options: Options) -> Options {
+  case arguments {
+    [] -> options
+    ["--refresh", ..arguments] ->
+      parse_options(arguments, Options(..options, refresh_package_list: True))
+    ["--redownload-all", ..arguments] ->
+      parse_options(
+        arguments,
+        Options(..options, read_packages_from_disc: False),
+      )
+    [_, ..arguments] -> parse_options(arguments, options)
+  }
+}
+
+fn print_help() -> Nil {
+  io.println(
+    "
+USAGE: pack <command> [flags]
+
+Commands:
+- help: Print this help message
+- fetch: Fetch package information from the Gleam package index without downloading
+  any source code
+- download: Download all Gleam packages from Hex
+- directory: Print the directory `pack` uses to store data
+
+Flags:
+
+--refresh  If `pack` has been run before, the information from the Gleam package
+  index is cached in a file to avoid querying the API every time. `--refresh`
+  causes `pack` to re-fetch all information from the package index.
+
+--redownload-all  Normally, when downloading packages, `pack` will skip any which
+  already are on disc. Instead, all packages will be re-downloaded.
+",
+  )
 }
 
 const hex_tarballs_url = "https://repo.hex.pm/tarballs/"
